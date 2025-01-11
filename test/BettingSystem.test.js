@@ -76,7 +76,8 @@ describe("Betting System", function() {
 
             await liquidityPool.connect(addr1).addLiquidity({ value: amount });
             await expect(
-                liquidityPool.connect(addr1).removeLiquidity(amount.mul(2))
+                // liquidityPool.connect(addr1).removeLiquidity(amount.mul(2))
+                liquidityPool.connect(addr1).removeLiquidity(amount * 2n)
             ).to.be.revertedWith("Insufficient shares");
         });
     });
@@ -85,6 +86,9 @@ describe("Betting System", function() {
         it("Should require minimum stake", async function() {
             const { oracle, addr1 } = await loadFixture(deployBettingSystemFixture);
             const lowStake = ethers.parseEther("0.05");
+            const betId = 0;  // Add this line to define betId
+            
+            await oracle.initializeOracle(betId);
 
             await expect(
                 oracle.connect(addr1).stake(0, { value: lowStake })
@@ -93,39 +97,52 @@ describe("Betting System", function() {
 
         it("Should handle correct staking process", async function() {
             const { oracle, addr1, minimumStake } = await loadFixture(deployBettingSystemFixture);
+            const betId = 0;
+            await oracle.initializeOracle(betId);
 
-            await expect(oracle.connect(addr1).stake(0, { value: minimumStake }))
+            await expect(oracle.connect(addr1).stake(betId, { value: minimumStake }))
                 .to.emit(oracle, "OracleStaked")
-                .withArgs(0, addr1.address, minimumStake);
+                .withArgs(betId, addr1.address, minimumStake);
         });
 
         it("Should prevent duplicate staking", async function() {
             const { oracle, addr1, minimumStake } = await loadFixture(deployBettingSystemFixture);
+            const betId = 0;
+            await oracle.initializeOracle(betId);
 
-            await oracle.connect(addr1).stake(0, { value: minimumStake });
+            await oracle.connect(addr1).stake(betId, { value: minimumStake });
             await expect(
-                oracle.connect(addr1).stake(0, { value: minimumStake })
+                oracle.connect(addr1).stake(betId, { value: minimumStake })
             ).to.be.revertedWith("Already staked");
         });
 
         it("Should handle voting and consensus correctly", async function() {
             const { oracle, addr1, addr2, addr3, minimumStake } = await loadFixture(deployBettingSystemFixture);
             const betId = 0;
-
-            // Set up oracles
+        
+            // Initialize the oracle
+            await oracle.initializeOracle(betId);
+        
+            // Set up oracles during staking period
             for (const addr of [addr1, addr2, addr3]) {
                 await oracle.connect(addr).stake(betId, { value: minimumStake });
             }
-
-            // First two votes
+        
+            // Fast forward past staking period
+            await time.increase(24 * 60 * 60 + 1); // Move past 1 day
+        
+            // End staking period
+            await oracle.endStakingPeriod(betId);
+        
+            // Now voting can begin
             await oracle.connect(addr1).vote(betId, true);
             await oracle.connect(addr2).vote(betId, true);
-
+        
             // Third vote should trigger consensus
             await expect(oracle.connect(addr3).vote(betId, true))
                 .to.emit(oracle, "ConsensusReached")
                 .withArgs(betId, true);
-
+        
             const [outcome, finalized] = await oracle.getConsensus(betId);
             expect(finalized).to.be.true;
             expect(outcome).to.be.true;
@@ -134,32 +151,40 @@ describe("Betting System", function() {
         it("Should properly slash incorrect votes", async function() {
             const { oracle, addr1, addr2, addr3, minimumStake } = await loadFixture(deployBettingSystemFixture);
             const betId = 0;
-
+        
+            // Initialize the oracle
+            await oracle.initializeOracle(betId);
+        
             // Record initial balances
             const initialBalances = await Promise.all([
                 addr1.provider.getBalance(addr1.address),
                 addr2.provider.getBalance(addr2.address),
                 addr3.provider.getBalance(addr3.address)
             ]);
-
-            // Setup stakes and votes
+        
+            // Setup stakes during staking period
             for (const addr of [addr1, addr2, addr3]) {
                 await oracle.connect(addr).stake(betId, { value: minimumStake });
             }
-
+        
+            // Fast forward past staking period
+            await time.increase(24 * 60 * 60 + 1);
+            await oracle.endStakingPeriod(betId);
+        
+            // Now proceed with voting
             await oracle.connect(addr1).vote(betId, true);
             await oracle.connect(addr2).vote(betId, true);
             await oracle.connect(addr3).vote(betId, false); // Wrong vote
-
+        
             // Check balances after slashing
             const finalBalances = await Promise.all([
                 addr1.provider.getBalance(addr1.address),
                 addr2.provider.getBalance(addr2.address),
                 addr3.provider.getBalance(addr3.address)
             ]);
-
+        
             // Verify addr3's stake was slashed
-            expect(finalBalances[2]).to.be.lessThan(initialBalances[2].sub(minimumStake));
+            expect(finalBalances[2]).to.be.lessThan(initialBalances[2] - minimumStake);
         });
     });
 
@@ -240,10 +265,17 @@ describe("Betting System", function() {
                 });
 
                 // Setup oracle consensus
+                await oracle.initializeOracle(0);  // Initialize for betId 0
+
                 for (const addr of [addr1, addr2, addr3]) {
                     await oracle.connect(addr).stake(0, { value: minimumStake });
                 }
 
+                // Fast forward past staking period
+                await time.increase(24 * 60 * 60 + 1);
+                await oracle.endStakingPeriod(0);
+
+                // Now proceed with voting
                 await oracle.connect(addr1).vote(0, true);
                 await oracle.connect(addr2).vote(0, true);
                 await oracle.connect(addr3).vote(0, true);
@@ -282,7 +314,7 @@ describe("Betting System", function() {
 
                 await expect(
                     bettingPool.connect(addr1).resolveBet(0)
-                ).to.be.revertedWith("Betting period active");
+                ).to.be.revertedWithCustomError(bettingPool, "BettingPeriodActive");
             });
         });
     });

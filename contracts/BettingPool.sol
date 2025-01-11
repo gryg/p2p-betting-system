@@ -22,6 +22,7 @@ contract BettingPool is IBettingPool, ReentrancyGuard, Ownable {
         bool resolved;
         uint256 totalAmountTrue;
         uint256 totalAmountFalse;
+        address[] participants;
         mapping(address => BetPosition) positions;
     }
 
@@ -75,6 +76,11 @@ contract BettingPool is IBettingPool, ReentrancyGuard, Ownable {
     function _takePosition(uint256 betId, bool position, uint256 amount) private {
         Bet storage bet = bets[betId];
         
+        // Only add to participants list if they don't already have a position
+        if (!bet.positions[msg.sender].hasPosition) {
+            bet.participants.push(msg.sender);
+        }
+        
         bet.positions[msg.sender] = BetPosition({
             hasPosition: true,
             position: position,
@@ -113,10 +119,9 @@ contract BettingPool is IBettingPool, ReentrancyGuard, Ownable {
         
         if (winningPool == 0) revert NoWinners();
 
-        // Optimized payout distribution using fixed-size batches
-        uint256 batchSize = 20;
-        for (uint256 i = 0; i < batchSize; i++) {
-            address participant = address(uint160(uint256(keccak256(abi.encodePacked(betId, i)))));
+        // Iterate through actual participants
+        for (uint256 i = 0; i < bet.participants.length; i++) {
+            address participant = bet.participants[i];
             BetPosition memory position = bet.positions[participant];
             
             if (position.hasPosition && position.position == outcome) {
